@@ -7,6 +7,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.os.AsyncTask;
 import android.os.Environment;
+import android.util.Log;
 import android.util.LruCache;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -47,41 +48,21 @@ public class PhotoWallAdapter extends ArrayAdapter<String> {
         super(context, resource, objects);
         mPhotoWall = photoView;
         taskCollection = new HashSet<BitmapWorkerTask>();
-        int maxMemory = (int) Runtime.getRuntime().maxMemory();
-        int cacheSize = maxMemory / 8;
-
-        // 运行内存缓存
-        mMemoryCache = new LruCache<String, Bitmap>(cacheSize) {
-            @Override
-            protected int sizeOf(String key, Bitmap bitmap) {
-                return bitmap.getByteCount();
-            }
-        };
-
-        try {
-            File cacheDir = getDiskCacheDir(context, "thumb");
-            if (!cacheDir.exists()) {
-                cacheDir.mkdirs();
-            }
-            // 磁盘缓存
-            mDiskLruCache = DiskLruCache.open(cacheDir, getAppVersion(context), 1, 10 * 1024 * 1024);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-
+        mMemoryCache = MemoryCacheUtils.getNewInstance();
+        mDiskLruCache = DiskCacheUtils.getNewInstance(context);
     }
 
     @Override
     public View getView(int position, View convertView, ViewGroup parent) {
         final String url = getItem(position);
         View view;
-        if (convertView == null){
+        if (convertView == null) {
             view = LayoutInflater.from(getContext()).inflate(R.layout.photo_layout, null);
         } else {
             view = convertView;
         }
         final ImageView imageView = (ImageView) view.findViewById(R.id.photo);
-        if (imageView.getLayoutParams().height != mItemHeight){
+        if (imageView.getLayoutParams().height != mItemHeight) {
             imageView.getLayoutParams().height = mItemHeight;
         }
         imageView.setTag(url);
@@ -91,53 +72,32 @@ public class PhotoWallAdapter extends ArrayAdapter<String> {
     }
 
     private void loadBitmaps(ImageView imageView, String url) {
-        Bitmap bitmap = getBitmapFromMemoryCache(url);
+//        Bitmap bitmap = getBitmapFromMemoryCache(url);
+        Bitmap bitmap = (Bitmap) MemoryCacheUtils.getCacheByKey(mMemoryCache, url);
         // 不在缓存中
-        if (bitmap == null){
+        if (bitmap == null) {
             BitmapWorkerTask task = new BitmapWorkerTask();
             taskCollection.add(task);
             task.execute(url);
         } else {
-            if (imageView != null && bitmap != null){
+            if (imageView != null && bitmap != null) {
                 imageView.setImageBitmap(bitmap);
             }
         }
     }
 
-    private int getAppVersion(Context context) {
-        PackageInfo info = null;
-        try {
-            info = context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
-            return info.versionCode;
-        } catch (PackageManager.NameNotFoundException e) {
-            e.printStackTrace();
-        }
-        return 1;
-    }
-
-    private File getDiskCacheDir(Context context, String uniqueName) {
-        String cachePath;
-        if (Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState())
-                || !Environment.isExternalStorageRemovable()){
-            cachePath  = context.getExternalCacheDir().getPath();
-        }else {
-            cachePath = context.getCacheDir().getPath();
-        }
-        return new File(cachePath + File.separator + uniqueName);
-    }
-
     public void flushCache() {
-        if (mDiskLruCache != null){
+        if (mDiskLruCache != null) {
             try {
                 mDiskLruCache.flush();
-            }catch (IOException e){
+            } catch (IOException e) {
                 e.printStackTrace();
             }
         }
     }
 
     public void setItemHeight(int height) {
-        if (height == mItemHeight){
+        if (height == mItemHeight) {
             return;
         }
         mItemHeight = height;
@@ -145,8 +105,8 @@ public class PhotoWallAdapter extends ArrayAdapter<String> {
     }
 
     public void cancelAllTasks() {
-        if (taskCollection != null){
-            for (BitmapWorkerTask task: taskCollection){
+        if (taskCollection != null) {
+            for (BitmapWorkerTask task : taskCollection) {
                 task.cancel(false);
             }
         }
@@ -160,46 +120,31 @@ public class PhotoWallAdapter extends ArrayAdapter<String> {
             imageUrl = strings[0];
             FileDescriptor fileDescriptor = null;
             FileInputStream fileInputStream = null;
-            DiskLruCache.Snapshot snapshot = null;
 
-            String key = hashKeyForDisk(imageUrl);
-            try {
-                snapshot = mDiskLruCache.get(key);
-                if (snapshot == null) {
-                    DiskLruCache.Editor editor = mDiskLruCache.edit(key);
-                    if (editor != null) {
-                        OutputStream outputStream = editor.newOutputStream(0);
-                        if (downloadUrlToStream(imageUrl, outputStream)) {
-                            editor.commit();
-                        } else {
-                            editor.abort();
-                        }
+            String key = DiskCacheUtils.hashKeyForDisk(imageUrl);
+
+            fileInputStream = DiskCacheUtils.getCachedObject(mDiskLruCache, strings[0], new DiskCacheUtils.SaveDiskCache() {
+                @Override
+                public boolean writeToOutputStream(DiskLruCache cache, String rawKey, String saveKey, OutputStream outputStream) {
+                    if (downloadUrlToStream(rawKey, outputStream)) {
+                        return true;
+                    } else {
+                        return false;
                     }
-                    snapshot = mDiskLruCache.get(key);
                 }
-                if (snapshot != null) {
-                    fileInputStream = (FileInputStream) snapshot.getInputStream(0);
-                    fileDescriptor = fileInputStream.getFD();
-                }
-
+            });
+            try {
+                fileDescriptor = fileInputStream.getFD();
                 Bitmap bitmap = null;
-                if (fileDescriptor != null){
+                if (fileDescriptor != null) {
                     bitmap = BitmapFactory.decodeFileDescriptor(fileDescriptor);
                 }
                 if (bitmap != null) {
-                    addBitmapToMemoryCache(strings[0], bitmap);
+                    MemoryCacheUtils.addMemoryCache(mMemoryCache, strings[0], bitmap);
                 }
                 return bitmap;
             } catch (IOException e) {
                 e.printStackTrace();
-            }finally {
-                if (fileDescriptor != null && fileInputStream != null){
-                    try {
-                        fileInputStream.close();
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    }
-                }
             }
             return null;
         }
@@ -207,12 +152,13 @@ public class PhotoWallAdapter extends ArrayAdapter<String> {
         @Override
         protected void onPostExecute(Bitmap bitmap) {
             super.onPostExecute(bitmap);
-            ImageView imageView = (ImageView) mPhotoWall.findViewById(R.id.photo);
-            if (null != imageView && null != bitmap){
+            ImageView imageView = (ImageView) mPhotoWall.findViewWithTag(imageUrl);
+            if (null != imageView && null != bitmap) {
                 imageView.setImageBitmap(bitmap);
             }
             taskCollection.remove(this);
         }
+
         private boolean downloadUrlToStream(String urlString, OutputStream outputStream) {
             HttpURLConnection urlConnection = null;
             BufferedOutputStream out = null;
@@ -249,40 +195,4 @@ public class PhotoWallAdapter extends ArrayAdapter<String> {
             return false;
         }
     }
-
-    private String hashKeyForDisk(String key) {
-        String cacheKey = null;
-        final MessageDigest mDigest;
-        try {
-            mDigest = MessageDigest.getInstance("MD5");
-            mDigest.update(key.getBytes());
-            cacheKey = bytesToHexString(mDigest.digest());
-        } catch (NoSuchAlgorithmException e) {
-            e.printStackTrace();
-        }
-        return cacheKey;
-    }
-
-    private String bytesToHexString(byte[] digest) {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < digest.length; i++) {
-            String hex = Integer.toHexString(0xFF & digest[i]);
-            if (hex.length() == 1) {
-                sb.append('0');
-            }
-            sb.append(hex);
-        }
-        return sb.toString();
-    }
-
-    public Bitmap getBitmapFromMemoryCache(String key){
-        return mMemoryCache.get(key);
-    }
-
-    private void addBitmapToMemoryCache(String key, Bitmap bitmap) {
-        if (getBitmapFromMemoryCache(key) == null){
-            mMemoryCache.put(key, bitmap);
-        }
-    }
-
 }

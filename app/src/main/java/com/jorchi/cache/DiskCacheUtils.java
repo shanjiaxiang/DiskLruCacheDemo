@@ -2,7 +2,6 @@ package com.jorchi.cache;
 
 import android.content.Context;
 import android.os.Environment;
-import android.util.Log;
 
 import com.jakewharton.disklrucache.DiskLruCache;
 
@@ -41,6 +40,12 @@ public class DiskCacheUtils {
         return mDiskLruCache;
     }
 
+    /**
+     * 样例程序：将制定地址图片下载后写入outputStream
+     *
+     * @author Anewbie
+     * @time 2019-03-01 17:15
+     */
     private static boolean downloadUrlToStream(String urlString, OutputStream outputStream) {
         HttpURLConnection urlConnection = null;
         BufferedOutputStream out = null;
@@ -54,7 +59,6 @@ public class DiskCacheUtils {
             while ((b = in.read()) != -1) {
                 out.write(b);
             }
-            Log.d("shan", "写入输出流成功");
             return true;
         } catch (MalformedURLException e) {
             e.printStackTrace();
@@ -78,7 +82,13 @@ public class DiskCacheUtils {
         return false;
     }
 
-    public static FileDescriptor getCachedObject(DiskLruCache cache, String rawKey, SaveDiskCache callback) {
+    /**
+     * 将需要缓存的数据写入， 返回FileInputStream
+     *
+     * @author Anewbie
+     * @time 2019-03-01 16:56
+     */
+    public static FileInputStream getCachedObject(DiskLruCache cache, String rawKey, SaveDiskCache callback) {
         FileDescriptor fileDescriptor = null;
         FileInputStream fileInputStream = null;
         DiskLruCache.Snapshot snapshot = null;
@@ -90,11 +100,8 @@ public class DiskCacheUtils {
                 DiskLruCache.Editor editor = cache.edit(saveKey);
                 if (editor != null) {
                     OutputStream outputStream = editor.newOutputStream(0);
-                    Log.d("shan", "outputStream"+ outputStream);
                     if (callback.writeToOutputStream(cache, rawKey, saveKey, outputStream)) {
-//                    if (downloadUrlToStream(rawKey, outputStream)) {
                         editor.commit();
-                        Log.d("shan", "commit");
                     } else {
                         editor.abort();
                     }
@@ -102,11 +109,9 @@ public class DiskCacheUtils {
                 snapshot = cache.get(saveKey);
             }
             if (snapshot != null) {
-                Log.d("shan", "snapshot is not null");
                 fileInputStream = (FileInputStream) snapshot.getInputStream(0);
-                fileDescriptor = fileInputStream.getFD();
             }
-            return fileDescriptor;
+            return fileInputStream;
         } catch (IOException e) {
             e.printStackTrace();
         } finally {
